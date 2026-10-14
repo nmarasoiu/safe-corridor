@@ -262,6 +262,19 @@ The project's own code is the guarantee layer: publisher, projection, allocator,
 
 A TigerBeetle cluster is strictly consistent, replicated by Viewstamped Replication, and intended to sit within one failure domain. That is a feature here, not a limitation: it is precisely why each site gets its own cluster and the escrow layer sits **above** them. Trying to stretch one strongly consistent cluster across grid areas would reintroduce exactly the coordination this project exists to avoid, and would make an unreachable peer into a halted dispatcher.
 
+### One writer per site
+
+**Each site has exactly one dispatcher, and it applies commits, snapshot publication and acknowledgements one at a time.** The ledger lives in TigerBeetle; the rest of a site's durable state (published snapshots and peer acknowledgements, the peer view, the projection checkpoint, activations) lives in a small site-local store. No operation needs a transaction across the two, but two of them read one side and write the other:
+
+- **Dispatch** reads the escrow interval from the store and commits to the ledger.
+- **Publication** checks the ledger position against the candidate snapshot and records the snapshot in the store.
+
+If these interleave, a commit approved against the interval *before* a snapshot was recorded can land *after* it, and move the position beyond budget of a snapshot a peer now holds. The bound breaks without any single step being wrong. Serialising the two operations through one writer rules this out; an atomic commit across both stores would not, because the race is between a read and a later write.
+
+The other cross-store dependencies need only ordering: the projection keeps its cursor beside its own state, so replaying change data capture is idempotent; and a snapshot or a held view is written to the store before it is sent or acknowledged, so a crash can only leave a site more constrained, never less.
+
+Running several dispatchers per site would require moving the interval into the ledger itself, as down- and up-slack accounts that TigerBeetle serialises, with changes to the outstanding snapshots applied as transfers whose IDs are derived from the snapshot offset so that replays are no-ops. Until availability demands it, limits are passed per commit and the single writer is the requirement. The simulator satisfies it by construction: every site transition is a pure function applied whole.
+
 ### Does energy accounting actually fit a financial ledger?
 
 Yes — and in one respect better than finance does, because **conservation here is a physical law rather than a bookkeeping convention**. Every watt-hour delivered genuinely came from somewhere. Losses and round-trip inefficiency become an explicit expense account, which is how double entry already handles them, and conservation then holds exactly. The industry also already does double entry without naming it: the **perimeter correction** is one debit and one credit in the same unit, summing to zero.
