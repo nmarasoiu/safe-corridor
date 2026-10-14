@@ -205,6 +205,13 @@ The derivation, and why the market clock makes the first two rules cheap in this
 
 **2. Two-sided escrow.** Each site holds a down-budget and an up-budget per quantity, and approves dispatch locally while both hold. When one side runs short it requests from a site with spare slack on that side: pairwise coordination, only when needed, never global consensus. The allocator enforces `Σ(D+U+2ε) ≤ C − F` as a hard invariant. Allocation policy is the main open design space.
 
+*What "within budget" is measured against.* §4 speaks of each site's "last snapshot". A receiver, though, may hold *any* snapshot published since it last acknowledged one, because the network reorders and drops messages. So each site keeps every snapshot at or above the lowest offset any peer has acknowledged, with genesis (offset 0, all zero) counting as published. Its local interval for a quantity is then `[max C(N) − D, min C(N) + U]` over those snapshots. Two more rules keep this sound:
+
+- A receiver acknowledges a snapshot only once its view is durable. Otherwise a crash could roll it back to a snapshot the sender has stopped counting.
+- A site publishes a snapshot only if its current position is already within budget of it. The projection can lag the ledger, and publishing a snapshot the position has already outrun would break the bound retroactively.
+
+The tests break each of these three rules on purpose, to show that the checks catch it. One consequence is worth stating: a peer that cannot acknowledge, because it is partitioned or down, freezes every other site within one budget of what that peer last saw. With static budgets the partitioned peer limits everyone, and Phase 6 has to decide what to do about that.
+
 **3. Selective coordination.** Classification is the two-vector of §3. Only operations that would leave a site's granted interval touch coordination. A site's local feeder ceiling never does.
 
 **4. Exactly-once projection.** The projection commits its derived state and the vector of source offsets in one atomic write, and resumes from the stored vector on restart. That offset vector is also a version vector: exactly-once delivery and causal tracking are the same structure.
@@ -298,6 +305,45 @@ Each claim below is stated so that it can fail:
 
 The last one is the sharpest: a difference reveals an operation wrongly assumed to commute, which is the failure mode this whole class of design is most prone to.
 
+### Running it
+
+Phases 1 and 2 are implemented in two modules:
+
+- `core` is pure Scala with no effect library. It contains the ledger, projection, snapshots, escrow interval and bound, plus an omniscient invariant checker that sees every ledger at once.
+- `sim` drives `core` on Cats Effect's `TestControl`, using simulated time and a scheduler seeded from the run seed.
+
+You need a JDK (21 or later) and sbt.
+
+```bash
+sbt test
+```
+
+```bash
+sbt "sim/run --seed 42"
+```
+
+```bash
+sbt -Dsim.seeds=2000 "sim/testOnly safecorridor.sim.SeedSweepSuite"
+```
+
+`sbt test` runs the property tests, the named scenarios and a 100-seed sweep. `sim/run` prints one run as a report. A wider sweep needs `-Dsim.seeds`.
+
+The report lists the injected faults, then a row per period with the following:
+
+- the truth;
+- each area's contribution;
+- the tightest slack between the truth and any site's bound, over the whole run;
+- which side of the corridor each site could prove when the period closed.
+
+`sim/run` exits non-zero on any violation, and a seed replays exactly, so a failing seed is a complete bug report.
+
+The tests come in two layers:
+
+- **Model tests.** `BoundModelSuite` treats the bound as a property of the pure state machines. It generates random interleavings of dispatch, projection, publication, durable flushes, crashes, and a network that reorders, drops and duplicates, and checks after every action.
+- **Simulation tests.** These add time, partitions and crash schedules on top. `BugInjectionSuite` breaks each of the three rules of §5.2 on purpose and requires the simulation to catch every one. That shows the checks can actually fail.
+
+Budgets stay static per period until Phase 3. So a site's bound keeps its full width even after the period closes and every view has converged.
+
 ## 8. Explicit simplifications
 
 This is a model of the domain, not a trading or dispatch platform. These are deliberate and stated up front:
@@ -312,6 +358,7 @@ This is a model of the domain, not a trading or dispatch platform. These are del
 | Grid model | Power flow, voltage, phase imbalance, nodal topology | One energy ceiling per area, as a thermal proxy |
 | Rebound | Asset-specific payback curves | A fixed fraction deferred to the next period |
 | Settlement and money | Imbalance pricing, BSP/BRP contracts, remuneration | Volumes only; money appears as a second `ledger`, with no pricing |
+| The truth (Phases 1–2) | Physical delivery, known only after metering | The sum of committed facts. Asset dropout appears only as lost capability; the gap between what the ledger claims and what the physics delivered waits for `ε` in Phase 4 |
 | Regulation | Prequalification, reporting, licences | Out of scope |
 
 No confidential information from any employer is used. All concepts come from public material and general knowledge.
@@ -342,10 +389,10 @@ Aggregator and virtual-power-plant platforms clearly solve some version of this 
 
 **First milestone: three simulated grid areas, each with its own log of committed deviations, projected exactly-once into a portfolio view that reports a *two-sided* error bound at every moment, with local feeder ceilings never breached under partition.**
 
-The milestone is done when a simulation partitions and heals the sites and shows that energy is conserved, no feeder ceiling is breached, and the reported two-sided bound is never violated.
+The milestone is done when a simulation partitions and heals the sites and shows that energy is conserved, no feeder ceiling is breached, and the reported two-sided bound is never violated. *Reached; see "Running it" in §7.*
 
-1. **Single-site ledger and projection.** Immutable deviation facts, idempotency by fact ID, derived position per `(area, period)`, atomic state-plus-offset commit.
-2. **Three sites, snapshots, simulator — and the two-sided bound computed live** *(the milestone)*. Offset-keyed snapshots, max-register merge, deterministic simulation with the invariant checks.
+1. **Single-site ledger and projection.** Immutable deviation facts, idempotency by fact ID, derived position per `(area, period)`, atomic state-plus-offset commit. *Done.*
+2. **Three sites, snapshots, simulator — and the two-sided bound computed live** *(the milestone)*. Offset-keyed snapshots, max-register merge, deterministic simulation with the invariant checks. *Done.*
 3. **Two-sided escrow.** Down- and up-budgets per site, local approval inside the interval, pairwise requests, and the corridor-width feasibility invariant enforced on the allocator.
 4. **Measurement uncertainty.** Baseline error and telemetry gaps as `ε_s` folded into the bound; late-arriving metering as corrections that re-derive history.
 5. **Time coupling.** Deferred-load liabilities, rebound into the following period, conservation checked across a window.
