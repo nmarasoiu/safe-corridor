@@ -22,6 +22,8 @@ How to read this document:
 
 The domain is deliberately simplified. The technical core is where the depth goes.
 
+Energy is the flagship of a wider family. Payments, telecom charging, trading limits and AI usage limits share the same kernel, and each adds something of its own. [KERNEL.md](KERNEL.md) states the kernel, maps the family, and sets out the backlog.
+
 ## 1. The domain: flexibility in the Nordic power system
 
 As electricity replaces fossil fuel and more generation becomes intermittent, the grid needs **flexibility**: consumption, storage and generation that can shift up or down on request. Norway's hydropower has long supplied most of it. Increasingly it must also come from thousands of small distributed resources — heat pumps, EV chargers, home and industrial batteries, flexible industrial loads.
@@ -187,6 +189,16 @@ The system has three levers, and picks by cost:
 
 This is why budgets carry two jobs at once: they **permit local action** and they **bound global error**. Shrinking them buys certainty with autonomy. The corollary above says how much of either you can ever afford.
 
+### What the budget contract requires
+
+The bound holds for a receiver only if its idea of each site's last snapshot and budgets matches the site's own. Under partition the two can differ, so three rules are part of the guarantee, not implementation detail:
+
+1. **Budgets are consumed, and re-armed only by a grant.** Publishing a snapshot does not re-arm a budget. If it did, a site could use its budget, publish, and use it again, and a partitioned receiver still holding the older snapshot would be wrong by twice the budget. Each snapshot therefore reports the cursor, the cumulative, and the *remaining* budget on each side.
+2. **New slack must be visible before it is used.** Tightening is unilateral. Loosening waits until every view relying on the budget can account for it: the asymmetry of the demarcation protocol. Lever 1 above works by re-anchoring budgets on fresh snapshots, which is a grant, and that is why it needs the network. Under partition no grant can be made visible, so **autonomy under partition is finite by construction**: a site can spend what it holds, and no more.
+3. **Budget moved between sites is counted in transit**, as money is, until the recipient's snapshot that includes it is known. Slack is itself a conserved quantity, and `Σ(D + U + 2ε) ≤ C − F` is a conservation law over it.
+
+The derivation, and why the market clock makes the first two rules cheap in this domain, are in [KERNEL.md](KERNEL.md#6-what-validating-the-thesis-surfaced).
+
 ## 5. Core mechanisms
 
 **1. Snapshots keyed by offset, not by time.** A snapshot says "everything up to offset N", which is deterministic — no clocks needed to define a batch, which matters when nothing in this domain has a trustworthy shared clock. A receiver keeps the highest offset per site and discards the rest. Duplicates and reordering change nothing: the merge is a max-register, one of the simplest CRDTs. Batch idempotency stops being a problem to solve.
@@ -273,7 +285,9 @@ Each claim below is stated so that it can fail:
 
 | Claim | Falsified by | Check |
 | --- | --- | --- |
-| The truth never leaves `[view − Σ(D+ε), view + Σ(U+ε)]` | any simulated run where it does | asserted after every step, across all seeds |
+| The truth never leaves `[view − Σ(D+ε), view + Σ(U+ε)]`, while every site's uncontrolled deviation stays within its local reserve | any simulated run where it does | asserted after every step, across all seeds |
+| A site whose uncontrolled deviation outruns its reserve knows it locally, at once | a breach the breaching site itself misses | asset dropout beyond reserve, under partition |
+| The bound survives budget grants and transfers | a receiver that sees a grant or transfer on one side and not the other | partition during reallocation |
 | `Σ(D + U + 2ε) ≤ C − F` holds at all times | a grant that overcommits the corridor | invariant on the budget allocator |
 | No feeder limit is breached, whatever the central view says | a partition in which two areas both swing up | partition plus concurrent-dispatch scenarios |
 | Whenever the bound reports *provably safe*, delivery does meet the commitment | a provably-safe period that under-delivers | compare the bound's verdict against simulated ground truth |
@@ -349,7 +363,7 @@ Other open questions:
 - [ ] Does the local feeder ceiling belong in the same quantity as the global commitment, or is it a separate quantity with its own corridor and its own budgets?
 - [ ] Should rebound be booked as a liability at dispatch time (pessimistic but predictable) or recognised when observed (accurate but too late to protect the feeder)?
 - [ ] Is a market period an account or a `ledger` in TigerBeetle? Accounts are cheap; ledgers isolate; the choice constrains which cross-period queries are possible.
-- [ ] Does TigerBeetle's change data capture expose enough to build offset-keyed snapshots, or must the publisher derive its own offsets?
+- [ ] Can TigerBeetle's commit timestamp serve as the snapshot cursor? Its change data capture already resumes from the last acknowledged event's timestamp and publishes at-least-once, leaving deduplication to the consumer, so a scalar cursor is available. Still to confirm: that cluster-assigned timestamps are strictly increasing, and how to bridge the AMQP output into Kafka.
 - [ ] How should two-phase transfers be ordered in the projection when priority and bulk traffic travel different paths?
 
 *Decided, so no longer open:* **Cats Effect**, for its `TestControl`, which executes an entire program under fully deterministic simulated time. ZIO's `TestClock` would serve equally well; the choice is not load-bearing.
